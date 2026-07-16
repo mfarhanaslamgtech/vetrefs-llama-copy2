@@ -3,7 +3,6 @@ import json
 import logging
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import OllamaEmbeddings
 from tqdm import tqdm
 from colorama import Fore, Style, init
@@ -51,19 +50,21 @@ def split_documents(docs, chunk_size=1500, chunk_overlap=300):
         logger.error(f"Error splitting documents: {e}")
         return []
 
-def create_embeddings_and_store(docs, embedding, persist_directory):
+def create_embeddings_and_store(docs, embedding, index_name, namespace):
     try:
-        vectordb = Chroma.from_documents(
-            documents=docs, 
-            embedding=embedding, 
-            persist_directory=persist_directory
-            )
-        logger.info(f"Successfully created embeddings and stored in {persist_directory}.")
-        # vectordb.persist()
+        from langchain_pinecone import PineconeVectorStore
+
+        PineconeVectorStore.from_documents(
+            documents=docs,
+            embedding=embedding,
+            index_name=index_name,
+            namespace=namespace,
+        )
+        logger.info(f"Successfully created embeddings and stored in Pinecone index {index_name}.")
     except Exception as e:
         logger.error(f"Error creating embeddings: {e}")
 
-def process_pdf_batch(batch, embedding, persist_directory, progress_file):
+def process_pdf_batch(batch, embedding, index_name, namespace, progress_file):
     try:
         batch_docs = []
         for pdf_file in batch:
@@ -72,7 +73,7 @@ def process_pdf_batch(batch, embedding, persist_directory, progress_file):
         
         splits = split_documents(batch_docs)
         
-        create_embeddings_and_store(splits, embedding, persist_directory)
+        create_embeddings_and_store(splits, embedding, index_name, namespace)
         
         # Save progress after the batch is fully processed
         save_progress(progress_file, batch[-1])
@@ -100,7 +101,7 @@ def load_progress(progress_file):
         logger.error(f"Error loading progress: {e}")
         return None
 
-def process_pdfs_in_batches(pdf_files_to_process, batch_size, embedding, persist_directory, progress_file='progress.json'):
+def process_pdfs_in_batches(pdf_files_to_process, batch_size, embedding, index_name, namespace, progress_file='progress.json'):
     # Load progress to resume from the last processed file
     last_processed_file = load_progress(progress_file)
     if last_processed_file:
@@ -117,21 +118,23 @@ def process_pdfs_in_batches(pdf_files_to_process, batch_size, embedding, persist
         with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
             futures = []
             for batch in batches:
-                future = executor.submit(process_pdf_batch, batch, embedding, persist_directory, progress_file)
-                futures.append(future)
+                future = executor.submit(process_pdf_batch, batch, embedding, index_name, namespace, progress_file)
+                futures.append((future, len(batch)))
 
-            for future in as_completed(futures):
+            for future, batch_len in futures:
                 try:
                     future.result()
-                    pbar.update(len(batch))
+                    pbar.update(batch_len)
                 except Exception as e:
                     print(f"Error occurred: {e}")
+
 
 
 def main():
     # root_directory = "/home/abusufyan/development/private_llm/app/embeddings/data"
     root_directory=r"E:\Mohsin HP\G\VetLexicon"
-    persist_directory = 'vetdb'
+    index_name = 'vetrefs-llama'
+    namespace = 'vetrefs'
     batch_size = 10
     progress_file=r"D:\private_llm\app\embeddings\progress.json"
 
@@ -147,7 +150,7 @@ def main():
     #     print(path)
 
     # Process PDFs in batches
-    process_pdfs_in_batches(pdf_files_to_process, batch_size, embedding, persist_directory, progress_file)
+    process_pdfs_in_batches(pdf_files_to_process, batch_size, embedding, index_name, namespace, progress_file)
 
     # Print the final message in the middle of the console output
     final_message = Fore.GREEN + "All PDF files have been Embedded and stored in VectorStore."

@@ -1,26 +1,797 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome to Vetpedia</title>
-    <style>
-        body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .content {
-            text-align: center;
-        }
-    </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VetPedia — Clinical Retrieval Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F3F4EC;
+    --paper-raised:#FBFBF6;
+    --paper-sunken:#EBEDE1;
+    --ink:#1F2B22;
+    --ink-soft:#5B6B5C;
+    --ink-faint:#8B968A;
+    --rule:#D9DECC;
+    --rule-strong:#C6CDB6;
+    --sage:#3F6148;
+    --sage-deep:#2C4732;
+    --sage-tint:#E4EBDE;
+    --slate:#33546A;
+    --slate-tint:#E3EBEF;
+    --gold:#A9762F;
+    --gold-tint:#F1E5CE;
+    --brick:#9A4232;
+    --brick-tint:#F2E0DA;
+    --shadow-card:0 1px 2px rgba(31,43,34,0.06), 0 8px 24px rgba(31,43,34,0.05);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{
+    width:100%;height:100%;margin:0;overflow:hidden;
+    font-family:'Inter',system-ui,sans-serif;
+    color:var(--ink);
+    background:var(--paper);
+  }
+
+  body{
+    background-image:
+      linear-gradient(var(--paper),var(--paper)),
+      repeating-linear-gradient(180deg, rgba(31,43,34,0.018) 0px, rgba(31,43,34,0.018) 1px, transparent 1px, transparent 34px);
+  }
+
+  .noise{
+    position:fixed;inset:0;pointer-events:none;opacity:0.5;mix-blend-mode:multiply;
+  }
+
+  .app{width:100vw;height:100vh;display:grid;grid-template-rows:auto 1fr auto;position:relative;z-index:1;}
+
+  /* ---------- topbar ---------- */
+  .topbar{
+    display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding:16px 28px;border-bottom:1px solid var(--rule);
+    background:var(--paper-raised);
+  }
+  .brand{display:flex;align-items:center;gap:14px;min-width:0;}
+  .mark{
+    width:42px;height:42px;border-radius:10px;flex:0 0 auto;
+    background:var(--sage-deep);color:#EAF1E6;
+    display:grid;place-items:center;position:relative;
+    font-family:'Fraunces',serif;font-weight:600;font-size:17px;
+  }
+  .mark::after{
+    content:"";position:absolute;inset:3px;border:1px solid rgba(234,241,230,0.35);border-radius:7px;
+  }
+  .brand-copy h1{
+    margin:0;font-family:'Fraunces',serif;font-weight:600;font-size:19px;letter-spacing:0.01em;color:var(--ink);
+  }
+  .brand-copy p{
+    margin:2px 0 0;color:var(--ink-soft);font-size:12px;font-family:'IBM Plex Mono',monospace;
+    text-transform:uppercase;letter-spacing:0.08em;
+  }
+
+  .topbar-right{display:flex;align-items:center;gap:10px;}
+  .new-chat-btn{appearance:none;border:1px solid var(--rule-strong);background:var(--paper-raised);color:var(--sage-deep);border-radius:8px;padding:8px 13px;font:500 11px "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.06em;cursor:pointer;}
+  .new-chat-btn:hover{border-color:var(--sage);background:var(--sage-tint);}
+  .kb-status{
+    display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;
+    border:1px solid var(--rule);background:var(--paper);
+    font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-soft);
+    text-transform:uppercase;letter-spacing:0.06em;
+  }
+  .kb-status .dot{width:7px;height:7px;border-radius:50%;background:var(--sage);flex:0 0 auto;}
+  .kb-status.busy .dot{background:var(--gold);}
+  .kb-status.error .dot{background:var(--brick);}
+
+  /* ---------- main layout ---------- */
+  .main{min-height:0;display:grid;grid-template-columns:1fr 320px;gap:0;}
+  .thread-col{min-height:0;display:grid;grid-template-rows:1fr auto;border-right:1px solid var(--rule);}
+  .evidence-col{min-height:0;display:flex;flex-direction:column;background:var(--paper-sunken);}
+
+  /* ---------- thread ---------- */
+  .thread{min-height:0;overflow-y:auto;padding:26px 32px 20px;border-bottom-left-radius:22px;border-bottom-right-radius:22px;}
+  .empty{display:grid;place-items:center;min-height:100%;padding:20px;}
+  .empty-card{max-width:480px;text-align:left;}
+  .empty-card .eyebrow{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.1em;
+    color:var(--sage);margin:0 0 10px;
+  }
+  .empty-card h2{
+    margin:0 0 12px;font-family:'Fraunces',serif;font-weight:600;font-size:26px;color:var(--ink);
+  }
+  .empty-card p{margin:0;line-height:1.7;color:var(--ink-soft);font-size:14.5px;}
+
+  .entry{max-width:820px;margin:0 0 22px;display:grid;grid-template-columns:52px 1fr;gap:14px;}
+  .entry-rail{display:flex;flex-direction:column;align-items:center;}
+  .entry-no{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink-faint);
+    writing-mode:vertical-rl;transform:rotate(180deg);letter-spacing:0.08em;margin-bottom:4px;
+  }
+  .entry-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
+  .entry.user .entry-dot{background:var(--slate);}
+  .entry.assistant .entry-dot{background:var(--sage);}
+  .entry.error .entry-dot{background:var(--brick);}
+  .entry-line{flex:1;width:1px;background:var(--rule-strong);margin-top:6px;}
+
+  .entry-body{min-width:0;}
+  .entry-head{display:flex;align-items:baseline;gap:10px;margin-bottom:6px;}
+  .entry-role{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.09em;
+    font-weight:500;
+  }
+  .entry.user .entry-role{color:var(--slate);}
+  .entry.assistant .entry-role{color:var(--sage-deep);}
+  .entry.error .entry-role{color:var(--brick);}
+  .entry-time{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink-faint);}
+
+  .entry-card{
+    background:var(--paper-raised);border:1px solid var(--rule);border-radius:20px;
+    padding:18px 20px;box-shadow:var(--shadow-card);
+  }
+  .entry.user .entry-card{background:var(--slate-tint);border-color:#CBDAE1;}
+  .entry.error .entry-card{background:var(--brick-tint);border-color:#E3C4BA;}
+  .entry-text{margin:0;font-size:15px;line-height:1.75;word-break:break-word;color:var(--ink);}
+  .entry-text h2,.entry-text h3{font-family:'Fraunces',serif;font-weight:650;line-height:1.25;margin:16px 0 8px;color:var(--ink);}
+  .entry-text h2:first-child,.entry-text h3:first-child{margin-top:0;}
+  .entry-text h2{font-size:22px;}
+  .entry-text h3{font-size:18px;}
+  .entry-text p{margin:0 0 12px;}
+  .entry-text ul{margin:4px 0 14px;padding-left:22px;}
+  .entry-text li{margin:6px 0;}
+  .entry-text strong{font-weight:700;color:var(--sage-deep);}
+  .entry-text mark{background:var(--gold-tint);color:var(--ink);border-radius:5px;padding:1px 5px;}
+
+  .entry-meta{margin-top:10px;display:flex;flex-direction:column;gap:8px;}
+  .reference-label{
+    font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;
+    color:var(--ink-faint);
+  }
+  .reference-strip{display:flex;flex-wrap:wrap;gap:8px;}
+  .reference-pill{
+    appearance:none;border:1px solid var(--rule-strong);background:linear-gradient(180deg,var(--paper-raised),var(--paper));
+    border-radius:999px;padding:7px 10px;display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+    color:var(--ink);font:inherit;font-size:12px;transition:border-color 120ms ease, transform 120ms ease, background 120ms ease;
+  }
+  .reference-pill strong{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-weight:600;color:var(--gold);
+  }
+  .reference-pill span{color:var(--ink-soft);}
+  .reference-pill:hover{border-color:var(--sage);background:var(--sage-tint);transform:translateY(-1px);}
+
+  .cite{
+    display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-weight:500;
+    color:var(--gold);background:var(--gold-tint);border:1px solid #E2CB9F;border-radius:4px;
+    padding:0 5px;margin:0 1px;cursor:pointer;vertical-align:1px;
+  }
+  .cite:hover{background:#E9D6AE;}
+
+  .thinking{color:var(--ink-faint);font-style:italic;}
+
+  /* ---------- evidence rail ---------- */
+  .evidence-head{
+    padding:20px 20px 14px;border-bottom:1px solid var(--rule);
+  }
+  .evidence-head .eyebrow{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-soft);margin:0 0 4px;
+  }
+  .evidence-head h3{margin:0;font-family:'Fraunces',serif;font-weight:600;font-size:17px;}
+  .evidence-list{flex:1;min-height:0;overflow-y:auto;padding:16px 18px 24px;}
+  .evidence-empty{
+    color:var(--ink-faint);font-size:13px;line-height:1.7;padding:8px 4px;
+  }
+  .card-stack{margin-bottom:14px;}
+  .evidence-card{
+    position:relative;background:var(--paper-raised);border:1px solid var(--rule);
+    border-radius:8px;padding:13px 14px 14px;box-shadow:var(--shadow-card);
+  }
+  .stamp{
+    position:absolute;top:-9px;right:10px;
+    font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:500;letter-spacing:0.08em;
+    color:var(--sage-deep);background:var(--sage-tint);border:1px solid #BFD4B7;
+    padding:2px 7px;border-radius:3px;transform:rotate(-3deg);text-transform:uppercase;
+  }
+  .evidence-ref{
+    font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--gold);font-weight:500;margin-bottom:4px;
+  }
+  .evidence-title{font-size:13px;font-weight:600;margin:0 0 6px;color:var(--ink);}
+  .evidence-snippet{font-size:12.5px;line-height:1.6;color:var(--ink-soft);margin:0;}
+  .evidence-card.flash{border-color:var(--gold);}
+
+  /* ---------- composer ---------- */
+  .composer-wrap{padding:0 32px 22px;border-top:1px solid var(--rule);background:var(--paper-raised);}
+  .composer-label{
+    padding-top:14px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;
+    letter-spacing:0.08em;color:var(--ink-faint);margin-bottom:8px;
+  }
+  .chart-fields{display:none;}
+  .field{display:flex;flex-direction:column;gap:4px;}
+  .field label{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-faint);}
+  .field input{
+    border:1px solid var(--rule-strong);background:var(--paper);border-radius:7px;
+    padding:9px 11px;font:inherit;font-size:13px;color:var(--ink);outline:none;
+    font-family:'IBM Plex Mono',monospace;
+  }
+  .field input:focus{border-color:var(--sage);box-shadow:0 0 0 3px var(--sage-tint);}
+
+  .ruled-box{
+    border:1px solid var(--rule-strong);border-radius:22px;background:var(--paper);
+    overflow:hidden;box-shadow:0 10px 34px rgba(31,43,34,0.08);
+  }
+  textarea{
+    width:100%;min-height:76px;max-height:220px;resize:vertical;border:0;outline:none;
+    background:transparent;color:var(--ink);padding:18px 20px 10px;font:inherit;font-size:15px;
+    line-height:1.65;
+  }
+  textarea::placeholder{color:var(--ink-faint);}
+
+  .composer-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;flex-wrap:wrap;}
+  .helper{color:var(--ink-faint);font-size:12px;max-width:56ch;line-height:1.5;}
+  .button-row{display:flex;gap:10px;}
+  .btn{appearance:none;border:0;border-radius:8px;padding:11px 18px;font:inherit;font-weight:600;font-size:13.5px;cursor:pointer;transition:transform 120ms ease, opacity 120ms ease, background 120ms ease;}
+  .btn:hover{transform:translateY(-1px);}
+  .btn:active{transform:translateY(0);}
+  .btn-primary{color:#EFF6EC;background:var(--sage-deep);}
+  .btn-primary:hover{background:var(--sage);}
+  .btn-secondary{color:var(--ink-soft);background:transparent;border:1px solid var(--rule-strong);}
+  .btn-secondary:hover{background:var(--paper-sunken);}
+  .btn[disabled]{opacity:0.55;cursor:not-allowed;transform:none;}
+
+  .spinner{
+    display:inline-block;width:12px;height:12px;border-radius:50%;
+    border:2px solid rgba(239,246,236,0.3);border-top-color:#EFF6EC;
+    animation:spin 700ms linear infinite;vertical-align:middle;margin-right:7px;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* ---------- footer ---------- */
+  .footer{display:none;align-items:center;justify-content:space-between;padding:9px 28px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink-faint);border-top:1px solid var(--rule);background:var(--paper-raised);}
+
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:var(--rule-strong);border-radius:6px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  @media (max-width:900px){
+    .main{grid-template-columns:1fr;}
+    .evidence-col{display:none;}
+    .thread{padding:20px 18px;}
+    .composer-wrap{padding:0 18px 18px;}
+    .topbar{padding:14px 16px;}
+  }
+</style>
 </head>
 <body>
-    <div class="content">
-        <h1>Welcome to VetPedia</h1>
-        <!-- <p>This is a welcoming message for Vetpedia.</p> -->
+<svg class="noise" width="0" height="0">
+  <filter id="grain"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+</svg>
+<div style="position:fixed;inset:0;pointer-events:none;opacity:0.035;filter:url(#grain);z-index:0;"></div>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">VP</div>
+      <div class="brand-copy">
+        <h1>VetPedia</h1>
+        <p>Clinical retrieval console</p>
+      </div>
     </div>
+    <div class="topbar-right">
+      <button class="new-chat-btn" id="newChatBtn" type="button">New chat</button>
+      <div class="kb-status" id="kbStatus"><span class="dot"></span><span id="kbStatusText">Knowledge base ready</span></div>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="thread-col">
+      <section class="thread" id="thread">
+        <div class="empty" id="emptyState">
+          <div class="empty-card">
+            <p class="eyebrow" id="welcomeEyebrow">New consult</p>
+            <h2 id="welcomeTitle">Ask a clinical question</h2>
+            <p id="welcomeCopy">Every answer is drawn from the veterinary knowledge base. Passages the assistant actually used show up as numbered marks in the text, with the source itself pinned in the evidence drawer on the right.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="composer-wrap">
+        <form id="chatForm">
+          <div class="composer-label">New message</div>
+          <div class="chart-fields">
+            <div class="field">
+              <label for="user_id">Chart no.</label>
+              <input id="user_id" type="number" min="1" value="" readonly />
+            </div>
+            <div class="field">
+              <label for="chat_session_id">Visit no. (optional)</label>
+              <input id="chat_session_id" type="number" min="1" placeholder="auto-assigned" />
+            </div>
+          </div>
+          <div class="ruled-box">
+            <textarea id="question" placeholder="Ask about diagnosis, treatment, differentials, or dosing..."></textarea>
+          </div>
+          <div class="composer-actions">
+            <div class="helper" id="helperText">Press Enter to send. Use Shift+Enter for a new line.</div>
+            <div class="button-row">
+              <button class="btn btn-secondary" id="clearBtn" type="button">Clear</button>
+              <button class="btn btn-primary" id="sendBtn" type="submit"><span id="sendSpinner" class="spinner" style="display:none"></span><span id="sendLabel">Send</span></button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <aside class="evidence-col">
+      <div class="evidence-head">
+        <p class="eyebrow">Evidence drawer</p>
+        <h3>Retrieved sources</h3>
+      </div>
+      <div class="evidence-list" id="evidenceList">
+        <p class="evidence-empty" id="evidenceEmpty">Sources will appear here once the assistant retrieves passages for a question.</p>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <span>POST /v1/chatbot</span>
+    <span id="footerHint">Your visit starts a fresh chat session. Nothing is stored in this browser.</span>
+  </footer>
+</div>
+
+<script>
+  const form = document.getElementById('chatForm');
+  const userIdInput = document.getElementById('user_id');
+  const sessionInput = document.getElementById('chat_session_id');
+  const questionInput = document.getElementById('question');
+  const thread = document.getElementById('thread');
+  const emptyState = document.getElementById('emptyState');
+  const kbStatus = document.getElementById('kbStatus');
+  const kbStatusText = document.getElementById('kbStatusText');
+  const sendBtn = document.getElementById('sendBtn');
+  const sendLabel = document.getElementById('sendLabel');
+  const sendSpinner = document.getElementById('sendSpinner');
+  const clearBtn = document.getElementById('clearBtn');
+  const footerHint = document.getElementById('footerHint');
+  const evidenceList = document.getElementById('evidenceList');
+  const evidenceEmpty = document.getElementById('evidenceEmpty');
+  const welcomeEyebrow = document.getElementById('welcomeEyebrow');
+  const welcomeTitle = document.getElementById('welcomeTitle');
+  const welcomeCopy = document.getElementById('welcomeCopy');
+
+  let entryCount = 0;
+  let evidenceCount = 0;
+
+  function getVisitorId(){
+    const key = 'vetpedia_visitor_id';
+    try {
+      let value = window.localStorage.getItem(key);
+      if (!value) { value = String(Math.floor(100000000 + Math.random() * 900000000)); window.localStorage.setItem(key, value); }
+      return Number(value);
+    } catch (err) { return Math.floor(100000000 + Math.random() * 900000000); }
+  }
+
+  function initializeWelcome(){
+    const visitedKey = 'vetpedia_has_visited';
+    let returning = false;
+    try { returning = window.localStorage.getItem(visitedKey) === 'true'; window.localStorage.setItem(visitedKey, 'true'); } catch (err) {}
+    userIdInput.value = getVisitorId();
+    sessionInput.value = ''; 
+    if (returning) {
+      welcomeEyebrow.textContent = 'Welcome back';
+      welcomeTitle.textContent = 'How can I help?';
+      welcomeCopy.textContent = 'Your clinical workspace is ready. Start a fresh question or choose a suggestion below.';
+      footerHint.textContent = 'Welcome back. Choose a suggestion or start a new clinical question.';
+    }
+  }
+
+  initializeWelcome();
+
+  newChatBtn.addEventListener('click', () => {
+    if (!sendBtn.disabled) window.location.reload();
+  });
+
+  function pad(n){ return String(n).padStart(3,'0'); }
+  function timeNow(){
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function setBusy(isBusy){
+    sendBtn.disabled = isBusy;
+    clearBtn.disabled = isBusy;
+    sendSpinner.style.display = isBusy ? 'inline-block' : 'none';
+    sendLabel.textContent = isBusy ? 'Sending' : 'Send';
+    kbStatus.className = 'kb-status' + (isBusy ? ' busy' : '');
+    kbStatusText.textContent = isBusy ? 'Retrieving and generating' : 'Knowledge base ready';
+  }
+
+  function ensureEmptyHidden(){
+    if (emptyState) emptyState.remove();
+  }
+
+  function addEntry(role, text){
+    ensureEmptyHidden();
+    entryCount += 1;
+    const row = document.createElement('article');
+    row.className = 'entry ' + role;
+
+    const rail = document.createElement('div');
+    rail.className = 'entry-rail';
+    const no = document.createElement('div');
+    no.className = 'entry-no';
+    no.textContent = 'No. ' + pad(entryCount);
+    const dot = document.createElement('div');
+    dot.className = 'entry-dot';
+    const line = document.createElement('div');
+    line.className = 'entry-line';
+    rail.appendChild(no);
+    rail.appendChild(dot);
+    rail.appendChild(line);
+
+    const body = document.createElement('div');
+    body.className = 'entry-body';
+    const head = document.createElement('div');
+    head.className = 'entry-head';
+    const roleLabel = document.createElement('span');
+    roleLabel.className = 'entry-role';
+    roleLabel.textContent = role === 'user' ? 'Clinician' : (role === 'error' ? 'No result' : 'Assistant');
+    const time = document.createElement('span');
+    time.className = 'entry-time';
+    time.textContent = timeNow();
+    head.appendChild(roleLabel);
+    head.appendChild(time);
+
+    const card = document.createElement('div');
+    card.className = 'entry-card';
+    const p = document.createElement('div');
+    p.className = 'entry-text';
+    p.textContent = text;
+    card.appendChild(p);
+
+    let references = null;
+    if (role === 'assistant') {
+      const meta = document.createElement('div');
+      meta.className = 'entry-meta';
+      const label = document.createElement('span');
+      label.className = 'reference-label';
+      label.textContent = 'References';
+      const strip = document.createElement('div');
+      strip.className = 'reference-strip';
+      meta.appendChild(label);
+      meta.appendChild(strip);
+      body.appendChild(head);
+      body.appendChild(card);
+      body.appendChild(meta);
+      references = strip;
+    } else {
+      body.appendChild(head);
+      body.appendChild(card);
+    }
+
+    row.appendChild(rail);
+    row.appendChild(body);
+    thread.appendChild(row);
+    thread.scrollTop = thread.scrollHeight;
+    return { row, card, p, references };
+  }
+
+  function escapeHtml(value){
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function renderInlineMarkdown(value){
+    return escapeHtml(value)
+      .replace(/==(.+?)==/g, '<mark>$1</mark>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\[(\d+)\]/g, '<span class="cite" data-ref="$1">§$1</span>');
+  }
+
+  function bindCitations(root){
+    root.querySelectorAll('.cite[data-ref]').forEach(span => {
+      span.addEventListener('click', () => flashEvidence(span.getAttribute('data-ref')));
+    });
+  }
+
+  function renderMarkdown(textEl, text){
+    const lines = String(text || '').split(/\r?\n/);
+    const html = [];
+    let listOpen = false;
+    let paragraph = [];
+
+    function flushParagraph(){
+      if (!paragraph.length) return;
+      html.push('<p>' + renderInlineMarkdown(paragraph.join(' ')) + '</p>');
+      paragraph = [];
+    }
+    function closeList(){
+      if (!listOpen) return;
+      html.push('</ul>');
+      listOpen = false;
+    }
+
+    lines.forEach(raw => {
+      const line = raw.trim();
+      if (!line){
+        flushParagraph();
+        closeList();
+        return;
+      }
+      const heading = line.match(/^(#{2,3})\s+(.+)$/);
+      if (heading){
+        flushParagraph();
+        closeList();
+        const tag = heading[1].length === 2 ? 'h2' : 'h3';
+        html.push('<' + tag + '>' + renderInlineMarkdown(heading[2]) + '</' + tag + '>');
+        return;
+      }
+      const bullet = line.match(/^[-*]\s+(.+)$/);
+      if (bullet){
+        flushParagraph();
+        if (!listOpen){
+          html.push('<ul>');
+          listOpen = true;
+        }
+        html.push('<li>' + renderInlineMarkdown(bullet[1]) + '</li>');
+        return;
+      }
+      paragraph.push(line);
+    });
+
+    flushParagraph();
+    closeList();
+    textEl.innerHTML = html.join('') || '';
+    bindCitations(textEl);
+  }
+
+  function renderCitedText(container, textEl, text){
+    renderMarkdown(textEl, text);
+  }
+
+  function flashEvidence(ref){
+    const card = document.querySelector('.evidence-card[data-ref="' + ref + '"]');
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('flash');
+    setTimeout(() => card.classList.remove('flash'), 1400);
+  }
+
+  function clearEvidence(){
+    evidenceList.innerHTML = '';
+    evidenceCount = 0;
+    const p = document.createElement('p');
+    p.className = 'evidence-empty';
+    p.id = 'evidenceEmpty';
+    p.textContent = 'Sources will appear here once the assistant retrieves passages for a question.';
+    evidenceList.appendChild(p);
+  }
+
+  function extractSources(data){
+    const candidates = data.sources || data.retrieved || data.citations || data.context || data.chunks;
+    if (!Array.isArray(candidates)) return [];
+    return candidates.map((c, i) => {
+      if (typeof c === 'string') {
+        return { ref: String(i + 1), title: 'Passage ' + (i + 1), snippet: c };
+      }
+      return {
+        ref: String(c.ref || c.id || (i + 1)),
+        title: c.title || c.source || c.name || c.file_name || c.filename || ('Passage ' + (i + 1)),
+        snippet: c.snippet || c.text || c.content || c.chunk || c.page_content || '',
+        source: c.source || c.path || c.file_path || '',
+        page: c.page ?? null
+      };
+    });
+  }
+
+  function renderReferenceStrip(target, sources){
+    if (!target) return;
+    target.innerHTML = '';
+    if (!sources.length) {
+      target.style.display = 'none';
+      return;
+    }
+    target.style.display = 'flex';
+    sources.forEach((src, index) => {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'reference-pill';
+      pill.setAttribute('data-ref', src.ref || String(index + 1));
+      pill.addEventListener('click', () => flashEvidence(src.ref || String(index + 1)));
+
+      const strong = document.createElement('strong');
+      strong.textContent = '§' + (src.ref || String(index + 1));
+
+      const label = document.createElement('span');
+      label.textContent = src.title;
+
+      pill.appendChild(strong);
+      pill.appendChild(label);
+      target.appendChild(pill);
+    });
+  }
+
+  function renderEvidence(sources){
+    clearEvidence();
+    const existingEmpty = document.getElementById('evidenceEmpty');
+    if (sources.length && existingEmpty) existingEmpty.remove();
+    if (!sources.length) return;
+
+    sources.forEach((src, index) => {
+      const ref = String(src.ref || index + 1);
+      const card = document.createElement('div');
+      card.className = 'evidence-card';
+      card.setAttribute('data-ref', ref);
+
+      const stamp = document.createElement('span');
+      stamp.className = 'stamp';
+      stamp.textContent = 'Retrieved';
+
+      const refEl = document.createElement('div');
+      refEl.className = 'evidence-ref';
+      refEl.textContent = '§' + ref;
+
+      const title = document.createElement('p');
+      title.className = 'evidence-title';
+      title.textContent = src.title;
+
+      const snippet = document.createElement('p');
+      const value = src.snippet || '';
+      snippet.className = 'evidence-snippet';
+      snippet.textContent = value.length > 220 ? value.slice(0, 220) + '…' : value;
+
+      card.appendChild(stamp);
+      card.appendChild(refEl);
+      card.appendChild(title);
+      card.appendChild(snippet);
+      evidenceList.appendChild(card);
+    });
+  }
+
+  clearBtn.addEventListener('click', () => {
+    userIdInput.value = getVisitorId();
+    sessionInput.value = '';
+    questionInput.value = '';
+    entryCount = 0;
+    thread.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'empty';
+    wrap.id = 'emptyState';
+    wrap.innerHTML = document.getElementById('chatForm') ? '' : '';
+    thread.appendChild(wrap);
+    location.reload();
+  });
+
+  questionInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const user_id = Number(userIdInput.value || 1);
+    const sessionRaw = sessionInput.value.trim();
+    const question = questionInput.value.trim();
+
+    if (!question){
+      kbStatus.className = 'kb-status error';
+      kbStatusText.textContent = 'Enter a question first';
+      return;
+    }
+
+    const payload = { user_id, question, chat_session_id: sessionRaw ? Number(sessionRaw) : null };
+
+    addEntry('user', question);
+    const pending = addEntry('assistant', 'Retrieving context and drafting a response...');
+    pending.p.classList.add('thinking');
+    setBusy(true);
+    footerHint.textContent = 'Streaming response from /v1/chatbot/stream.';
+    questionInput.value = '';
+
+    try {
+      const response = await fetch('/v1/chatbot/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok || !response.body){
+        pending.row.remove();
+        addEntry('error', 'The streaming request failed.');
+        kbStatus.className = 'kb-status error';
+        kbStatusText.textContent = 'Request failed';
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamedAnswer = '';
+      let currentSources = [];
+      pending.p.textContent = 'Connecting to retrieval pipeline...';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+
+          if (event.type === 'session' && event.chat_session_id) {
+            sessionInput.value = event.chat_session_id;
+          }
+
+          if (event.type === 'status') {
+            kbStatusText.textContent = event.message;
+            if (!streamedAnswer) {
+              pending.p.classList.add('thinking');
+              pending.p.textContent = event.message + '...';
+            }
+          }
+
+          if (event.type === 'sources') {
+            currentSources = extractSources(event);
+            renderReferenceStrip(pending.references, currentSources);
+            renderEvidence(currentSources);
+            if (!streamedAnswer) {
+              pending.p.classList.add('thinking');
+              pending.p.textContent = currentSources.length
+                ? 'Found ' + currentSources.length + ' retrieved source' + (currentSources.length > 1 ? 's' : '') + '. Generating answer...'
+                : 'No source chunks returned yet. Generating answer...';
+            }
+          }
+
+          if (event.type === 'chunk') {
+            streamedAnswer += event.text || '';
+            pending.p.classList.remove('thinking');
+            renderMarkdown(pending.p, streamedAnswer);
+            thread.scrollTop = thread.scrollHeight;
+          }
+
+          if (event.type === 'done') {
+            streamedAnswer = event.answer || streamedAnswer;
+            currentSources = extractSources(event);
+            renderMarkdown(pending.p, streamedAnswer);
+            renderReferenceStrip(pending.references, currentSources);
+            renderEvidence(currentSources);
+            if (event.chat_session_id) sessionInput.value = event.chat_session_id;
+          }
+
+          if (event.type === 'error') {
+            pending.row.remove();
+            addEntry('error', event.error?.message || 'The request failed.');
+            kbStatus.className = 'kb-status error';
+            kbStatusText.textContent = event.error?.code ? ('Error: ' + event.error.code) : 'Request failed';
+            footerHint.textContent = 'Nothing was retrieved for this entry.';
+            return;
+          }
+        }
+      }
+
+      kbStatus.className = 'kb-status';
+      kbStatusText.textContent = 'Knowledge base ready';
+      footerHint.textContent = currentSources.length
+        ? currentSources.length + ' source' + (currentSources.length > 1 ? 's' : '') + ' pinned to the evidence drawer.'
+        : 'Answer generated. No source passages were returned.';
+    } catch (err) {
+      pending.row.remove();
+      addEntry('error', 'Could not reach the server. Check that the backend is running and try again.');
+      kbStatus.className = 'kb-status error';
+      kbStatusText.textContent = 'Offline';
+      footerHint.textContent = 'Network error while calling the backend.';
+    } finally {
+      setBusy(false);
+    }
+  });
+</script>
 </body>
 </html>

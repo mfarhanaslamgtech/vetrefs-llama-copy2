@@ -1,5 +1,8 @@
 #import dependencies
 import json
+from pathlib import Path
+from typing import Any, Dict, List
+
 from langchain.schema import (
     AIMessage,
     HumanMessage,
@@ -27,6 +30,7 @@ class Chatbot:
         self.logging = configure_logging()
         self.vectordb = initialize_embeddings()
         self.llm = initialize_llm()
+        self.retriever = self.vectordb.as_retriever(search_kwargs={"k": 5})
 
         # Define the prompt template for the veterinarian chatbot
         template = """
@@ -56,11 +60,15 @@ class Chatbot:
         Your role is to emulate a dedicated professional in the field, offering thorough guidance and solutions for various pet/animals health issues. 
 
         **Instructions No 3 : 
-        When a user asks a question, the answer/response, either in general or specific context, should be given with the following restrictions.         
+        When a user asks a question, give a detailed, clinically useful answer in Markdown.
+            - Use clear section headings with ## or ###.
+            - Use bullet lists for causes, signs, diagnostics, treatment, and monitoring where relevant.
+            - Use **bold** for important clinical terms, priorities, and cautions.
+            - Use ==highlight== for key takeaways or urgent points.
+            - Prefer a longer, complete answer with practical clinical structure instead of a short definition.
             - Convert European English to American English: Adjust spellings, vocabulary, and phrase structures to adhere to the US English style.
-            - Do not provide any references, European countries/city names, publications, hyperlinks, citations, and authors/contributors' names provided within the context or from your base knowledge.
-            - Do not provide brand names and links: Omit mentions of specific brands, such as "Vetlexicon," and any associated URLs or branded content as indicated in the header and footer.
-            - Do not provide any publications or external sources links in the answer, even when the user ask.
+            - Do not provide external hyperlinks, author names, publication names, or brand names.
+            - Do not mention branded content or any associated URLs from the context.
 
         **Instructions No 4 : 
         (strict instructions), in your response, do not suggest the user to consult a vet professional as they themselves are the vet professionals. 
@@ -79,6 +87,82 @@ class Chatbot:
         self.QA_PROMPT = PromptTemplate(template=template, input_variables=[
                            "question", "context","chat_history"])
 
+
+    def _build_chain(self, memory, include_chat_history=False):
+        chain_kwargs = {
+            "llm": self.llm,
+            "retriever": self.retriever,
+            "combine_docs_chain_kwargs": {"prompt": self.QA_PROMPT},
+            "memory": memory,
+            "return_source_documents": True,
+            "verbose": False,
+        }
+        if include_chat_history:
+            chain_kwargs["get_chat_history"] = lambda history: history
+        return ConversationalRetrievalChain.from_llm(**chain_kwargs)
+
+    @staticmethod
+    def _normalize_text(value: Any) -> str:
+        return " ".join(str(value).split()).strip()
+
+    def _format_sources(self, documents: List[Any]) -> List[Dict[str, Any]]:
+        sources: List[Dict[str, Any]] = []
+        for index, document in enumerate(documents or [], start=1):
+            metadata = getattr(document, "metadata", {}) or {}
+            content = self._normalize_text(getattr(document, "page_content", "") or "")
+            if not content:
+                continue
+
+            raw_path = metadata.get("path") or metadata.get("file_path") or metadata.get("filename")
+            source_name = metadata.get("source") or raw_path or metadata.get("title") or metadata.get("name")
+            if raw_path:
+                file_name = Path(str(raw_path)).name
+            elif isinstance(source_name, str):
+                file_name = Path(source_name).name if ("/" in source_name or "\\" in source_name) else source_name
+            else:
+                file_name = None
+
+            page = metadata.get("page")
+            if file_name and page is not None:
+                title = f"{file_name} · p. {int(page) + 1}" if str(page).isdigit() or isinstance(page, int) else f"{file_name} · p. {page}"
+            elif file_name:
+                title = file_name
+            elif page is not None:
+                title = f"Passage {index} · p. {page}"
+            else:
+                title = f"Passage {index}"
+
+            payload: Dict[str, Any] = {
+                "ref": str(index),
+                "title": title,
+                "snippet": content[:500],
+            }
+            if source_name:
+                payload["source"] = str(source_name)
+            if page is not None:
+                payload["page"] = page
+            if metadata:
+                payload["metadata"] = metadata
+            sources.append(payload)
+        return sources
+
+    def _retrieve_sources(self, question: str) -> List[Dict[str, Any]]:
+        try:
+            if hasattr(self.retriever, "invoke"):
+                documents = self.retriever.invoke(question)
+            else:
+                documents = self.retriever.get_relevant_documents(question)
+        except Exception:
+            documents = []
+        return self._format_sources(documents)
+
+    def _invoke_chain(self, chain, question: str) -> Dict[str, Any]:
+        payload = chain.invoke({"question": question})
+        sources = payload.get("source_documents", [])
+        return {
+            "answer": payload.get("answer", ""),
+            "sources": self._format_sources(sources),
+        }
 
     #func for making messages serialized before storing in db.
     def serialize_memory_messages(self, chain_name):
@@ -131,26 +215,25 @@ class Chatbot:
 
             memory = ConversationBufferMemory(
                 memory_key="chat_history",
+                output_key="answer",
                 return_messages=True)
             
-            first_chain = ConversationalRetrievalChain.from_llm(
-                llm=self.llm,
-                retriever=self.vectordb.as_retriever(search_kwargs={"k": 5}),
-                combine_docs_chain_kwargs={"prompt": self.QA_PROMPT},
-                memory=memory,
-                verbose=False
-                )
+            first_chain = self._build_chain(memory)
+            sources = self._retrieve_sources(question)
             
             #*********************************************
-            answer = first_chain.invoke({"question": question})
+            answer = self._invoke_chain(first_chain, question)
             #*********************************************
+
+            if not answer.get("sources"):
+                answer["sources"] = sources
 
             # Process the Chat Messages
             serialized_message = self.serialize_memory_messages(first_chain)
             self.db_handler.save_new_session_chat(
                 user_id, chat_session_id, serialized_message)
             # return answer of question
-            return answer['answer']
+            return answer
         
         else:
 
@@ -162,26 +245,24 @@ class Chatbot:
             retrieved_chat_history = ChatMessageHistory(messages= deserialized_messages)
             # Create a new ConversationBufferMemory from a ChatMessageHistory class
             retrieved_memory =  ConversationBufferMemory(
-                chat_memory=retrieved_chat_history, memory_key="chat_history") 
+                chat_memory=retrieved_chat_history,
+                memory_key="chat_history",
+                output_key="answer") 
 
             print(retrieved_memory)
             # Build a second Conversational Retrieval Chain
-            second_chain = ConversationalRetrievalChain.from_llm(
-                self.llm,
-                retriever=self.vectordb.as_retriever(),
-                memory=retrieved_memory,
-                combine_docs_chain_kwargs={"prompt": self.QA_PROMPT},
-                #verbose=True,
-                get_chat_history=lambda h : h,
-                verbose=True
-            )
+            second_chain = self._build_chain(retrieved_memory, include_chat_history=True)
+            sources = self._retrieve_sources(question)
             
             #*********************************************
-            answer = second_chain.invoke({"question": question})
+            answer = self._invoke_chain(second_chain, question)
             #*********************************************
+
+            if not answer.get("sources"):
+                answer["sources"] = sources
 
             serialized_message = self.serialize_memory_messages(second_chain)
             self.db_handler.update_existing_session_chat(
                 user_id, chat_session_id, serialized_message)
             # return answer of question
-            return answer['answer']
+            return answer

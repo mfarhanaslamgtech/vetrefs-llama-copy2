@@ -1,461 +1,345 @@
-import inspect
-from flask_restful import Resource
-from werkzeug.exceptions import NotFound
-from flask import request,jsonify
-from logs.logger import configure_logging
-from database.db_operations import DatabaseHandler
+import asyncio
+import json
+import logging
+import re
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, field_validator
+
+from app.chatbot.chatbot import Chatbot
+from app.config.config import Config
+from app.core.dependencies import get_chatbot, get_database_handler
+from app.core.errors import BackendServiceError
+from app.database.db_operations import DatabaseHandler
+from app.logs.logger import configure_logging
 
 logging = configure_logging()
-#create instance of DbOperations
-db_handler = DatabaseHandler()
+router = APIRouter(prefix="/v1/chatbot", tags=["chatbot"])
 
-# Created ChatbotResource class 
-class ChatbotResource(Resource):
-    """
-    Resource class for handling user interactions with the chatbot.
 
-    This class defines an endpoint for processing user questions 
-    and managing chat sessions. It utilizes the Chatbot class to 
-    provide responses and store chat history in the database.
+class ChatRequest(BaseModel):
+    user_id: int = Field(..., ge=1, description="Unique user identifier")
+    chat_session_id: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Optional chat session identifier. If omitted, a new one is created.",
+    )
+    question: str = Field(..., min_length=1, description="User question")
 
-    Methods:
-    - post: Handle HTTP POST requests to answer user questions 
-    and manage chat sessions.
+    @field_validator("chat_session_id", mode="before")
+    @classmethod
+    def normalize_chat_session_id(cls, value):
+        if value in (None, "", "null", "None"):
+            return None
+        return value
 
-    Attributes:
-    - chatbot (Chatbot): An instance of the Chatbot class for 
-    managing chat interactions.
+    @field_validator("question", mode="before")
+    @classmethod
+    def normalize_question(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+        return value
 
-    Rate Limiting:
-    Rate limiting is applied to control the number of requests per 
-    minute and per day. Requests beyond the specified limits will 
-    result in an HTTP 429 Too Many Requests response.
 
-    Note: This class extends the Flask-RESTful Resource class.
+class RenameChatTitleRequest(BaseModel):
+    user_id: int = Field(..., ge=1)
+    chat_session_id: int = Field(..., ge=1)
+    chat_title: str = Field(..., min_length=1, max_length=50)
 
-    Usage Example:
-    ```
-    chatbot = Chatbot()
-    api.add_resource(ChatbotResource, 
-    '/v1/chatbot', resource_class_args=(chatbot,), endpoint='chatbot_resource')
-    ```
-    """
 
-    def __init__(self, chatbot):
-        """
-        Constructor method to initialize the ChatbotResource.
+_OPENAI_AUTH_ERROR_PATTERN = re.compile(
+    r"api key|authentication|unauthorized|invalid api key|openai api key",
+    re.IGNORECASE,
+)
+_OPENAI_RATE_LIMIT_PATTERN = re.compile(
+    r"rate limit|too many requests",
+    re.IGNORECASE,
+)
 
-        Parameters:
-        - chatbot (Chatbot): An instance of the Chatbot class for managing chat interactions.
-        """
-        self.chatbot = chatbot
-        self.db_handler = db_handler
-    
-    # Apply rate limiting for certin request per minute and request per day
-    # @limiter.limit("2 per minute; 100 per day", error_message="Sorry, you have exceeded the rate limit. Please try again later.")
 
-    # Defined the HTTP POST method to handle user questions in JSON format
-    def post(self):
-        """
-        Handle HTTP POST requests to answer user questions
-          and manage chat sessions.
+def _is_openai_auth_error(exc: Exception) -> bool:
+    return bool(_OPENAI_AUTH_ERROR_PATTERN.search(str(exc)))
 
-        This method processes incoming JSON data, extracts 
-        user_id, chat_session_id, and question,
-        and delegates the question to the associated Chatbot
-          instance. It also generates and saves
-        chat titles and returns the response along with the
-          chat_session_id.
 
-        Returns:
-        - dict: A dictionary containing the chatbot's answer
-          and the associated chat_session_id.
-          Example: {'answer': 'Response text.', 'chat_session_id': 1}
-        """
-        try:
-            # get the data from incoming request
-            data = request.get_json()
+def _is_openai_rate_limit_error(exc: Exception) -> bool:
+    return bool(_OPENAI_RATE_LIMIT_PATTERN.search(str(exc)))
 
-            # Extract user_id and chat_session_id from the request data
-            user_id = data.get("user_id")
-            chat_session_id = data.get("chat_session_id")
-            question = data.get("question")
-            # print(type(question)) 
 
-            # If chat_session_id is not a valid numeric int, generate a new one
-            if not isinstance(chat_session_id, int) :
-                chat_session_id = self.db_handler.generate_chat_session_id(user_id)
-                data["chat_session_id"] = chat_session_id  
+def _is_openai_sdk_missing_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return isinstance(exc, (ImportError, ModuleNotFoundError)) or "could not import openai python package" in error_text
 
-            # Process the request using the provided or generated chat_session_id
-            answer = self.chatbot.answer_question(user_id, chat_session_id, question)
 
-            # Generate and save chat title
-            generated_chat_title = self.db_handler.generate_chat_title(user_id, chat_session_id)
-            
-            # save the chat title
-            self.db_handler.save_chat_title(user_id, chat_session_id, generated_chat_title)
-            # return the response
-            response =  {'answer': answer, 'chat_session_id': chat_session_id}
-            return response
-        
-        except Exception as e:
-            # Log the error
-            # logging.error(f"An error occurred while processing a request: {str(e)}")
-            logging.error(f"An error occurred while processing a request",exc_info=True)
-            return {'error': 'An error occurred while processing your request.'}, 500
+def _raise_model_http_error(exc: Exception) -> None:
+    if _is_openai_sdk_missing_error(exc):
+        raise BackendServiceError(
+            code="openai_sdk_missing",
+            message="OpenAI SDK is not installed. Install project dependencies and retry.",
+            service="openai",
+            model=Config.LLM_NAME,
+        ) from exc
 
-  
-# Created ChatHistoryResource class to retrieve chat history
-class ChatHistoryResource(Resource):
-    """
-    Resource class for retrieving chat history for a specific user 
-    and chat session.
+    if _is_openai_auth_error(exc):
+        raise BackendServiceError(
+            code="openai_auth_error",
+            message="OpenAI API key is missing or invalid.",
+            service="openai",
+            model=Config.LLM_NAME,
+        ) from exc
 
-    Methods:
-    - get(self, user_id, chat_session_id): Retrieve chat history for
-      a specific user and chat session.
+    if _is_openai_rate_limit_error(exc):
+        raise BackendServiceError(
+            code="openai_rate_limited",
+            message="OpenAI rate limit reached.",
+            service="openai",
+            model=Config.LLM_NAME,
+        ) from exc
 
-    """
-    def __init__(self):
-        self.db_handler = db_handler
 
-    # Defined the HTTP GET to retrieve chat history
-    def get(self, user_id, chat_session_id):
-        """
-        Retrieve and format chat history for a specific user 
-        and chat session.
-
-        Parameters:
-        - user_id (int): The unique identifier for the user.
-        - chat_session_id (int): The identifier for the chat_session.
-
-        Returns:
-        - dict: A formatted dictionary containing chat history.
-
-        Raises:
-        - NotFound: If the chat history is not found in the database.
-
-        """
-        try:
-            chat_history = self.db_handler.get_chat_history(user_id, chat_session_id)
-            return jsonify(chat_history)
-        except Exception as e:
-            logging.error(f"Chat history not found: {str(e)}")
-            return {'error': 'Chat history not found!.'}, 404
-        
-        
-class ChatListResource(Resource):
-    """
-    Resource for retrieving a list of chat sessions for a user.
-
-    Methods:
-    - get(user_id: int) -> dict:
-        Retrieve a list of chat sessions with their corresponding
-          first questions.
-
-    - get_chat_title(user_id: int, chat_session_id: int) -> str:
-        Retrieve the chat title for a specific chat session.
-
-    """
-    def __init__(self):
-        #instance attribute
-        self.db_handler = db_handler
-        
-
-    # Defined the HTTP GET method to retrieve all chat sessions for a user
-    def get(self, user_id):
-        """
-        Retrieve a list of chat sessions with their corresponding
-          first questions.
-
-        Args:
-        - user_id (int): The unique identifier for the user.
-
-        Returns:
-        - dict: A dictionary containing chat sessions along with 
-        their first questions.
-          Example:
-          {
-            "chat_sessions": [
-              {"chat_session_id": 1, "chat_title": "First Chat"},
-              {"chat_session_id": 2, "chat_title": "Second Chat"}
-            ]
-          }
-        """
+@router.post("")
+async def answer_chat(
+    request_data: ChatRequest,
+    chatbot: Chatbot = Depends(get_chatbot),
+    db_handler: DatabaseHandler = Depends(get_database_handler),
+):
+    try:
+        chat_session_id = request_data.chat_session_id
+        if not isinstance(chat_session_id, int):
+            chat_session_id = db_handler.generate_chat_session_id(request_data.user_id)
 
         try:
-            # Query the database to get all chat sessions for the user
-            chat_sessions = self.db_handler.get_chat_sessions(user_id)
-            print(" chat sessions", chat_sessions)
-            # Create a dictionary to store chat sessions with corresponding first questions
-            chat_sessions_with_questions = []
+            chatbot_response = chatbot.answer_question(
+                request_data.user_id,
+                chat_session_id,
+                request_data.question,
+            )
+        except Exception as exc:
+            logging.error(
+                "Chat completion failed (%s on %s): %s",
+                exc.__class__.__name__,
+                Config.LLM_NAME,
+                str(exc),
+                exc_info=True,
+            )
+            _raise_model_http_error(exc)
+            raise
 
-            # Populate the chat_sessions_with_questions dictionary
-            for chat_session_id in chat_sessions:
-                chat_title = self.db_handler.get_chat_title(user_id, chat_session_id)
-                
-                # chat_sessions_with_questions[chat_session_id] = first_question
-                chat_sessions_with_questions.append(
-                    {"chat_session_id":chat_session_id, "chat_title":chat_title}
-                    )
-            # If the list is empty, raise an exception
-            if not chat_sessions_with_questions:
-                raise Exception()
+        generated_chat_title = db_handler.generate_chat_title(
+            request_data.user_id,
+            chat_session_id,
+        )
+        db_handler.save_chat_title(
+            request_data.user_id,
+            chat_session_id,
+            generated_chat_title,
+        )
 
-            # Return the list of chat sessions with corresponding first questions in the response
-            response = {'chat_sessions': chat_sessions_with_questions}
-             
-            return response
-        except Exception as e:
-            # Log the error
-            logging.error(f"Chat list not found!: {str(e)}")
-            return {'error': 'Chat list not found!!.'}, 404
+        if isinstance(chatbot_response, dict):
+            answer = chatbot_response.get("answer", "")
+            sources = chatbot_response.get("sources", [])
+        else:
+            answer = chatbot_response
+            sources = []
+
+        payload = {"answer": answer, "chat_session_id": chat_session_id}
+        if sources:
+            payload["sources"] = sources
+        return payload
+    except HTTPException:
+        raise
+    except BackendServiceError:
+        raise
+    except Exception:
+        logging.error("An error occurred while processing a request", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while processing your request.",
+        )
 
 
-# class for rename the chat_title
-class ChatTitleRenameResource(Resource):
-    """
-    Resource for renaming the chat title of a specific chat session.
+@router.post("/stream")
+async def answer_chat_stream(
+    request_data: ChatRequest,
+    chatbot: Chatbot = Depends(get_chatbot),
+    db_handler: DatabaseHandler = Depends(get_database_handler),
+):
+    async def event_stream():
+        def encode(event):
+            return json.dumps(event, ensure_ascii=False) + "\n"
 
-    Attributes:
-    - chatList (ChatList): An instance of the ChatList class.
+        chat_session_id = request_data.chat_session_id
+        if not isinstance(chat_session_id, int):
+            chat_session_id = db_handler.generate_chat_session_id(request_data.user_id)
 
-    Methods:
-    - put() -> dict:
-        Update or rename the chat title for a specific chat session.
+        yield encode({"type": "session", "chat_session_id": chat_session_id})
+        yield encode({"type": "status", "message": "Retrieving context"})
 
-    Description:
-    This resource provides an API endpoint for updating or renaming 
-    the chat title of a specific chat session. It is associated with
-      the ChatList class, which is responsible for managing the list 
-      of chat sessions.
-
-    Methods:
-    - put() -> dict:
-        Update or rename the chat title for a specific chat session. 
-        This method expects a JSON payload containing the user_id, 
-        chat_session_id, and chat_title. It validates the input, checks
-          the existence of the chat session, and updates the chat title 
-          in the database.
-
-    Example Usage:
-    Suppose a user wants to rename the chat title for a chat session. 
-    They can send a PUT request to the
-    '/v1/chatbot/rename_chat_title' endpoint with a JSON payload 
-    containing the user_id, chat_session_id, and
-    the new chat_title. If successful, the method returns a success message.
-
-    """
-    def __init__(self):
-        self.db_handler = db_handler
-    
-    # Apply rate limiting for certin request per minute and request per day
-    # @limiter.limit("10 per minute; 100 per day")
-
-    # define the put method to update/rename the chat_title
-    def put(self):
-            """
-        Update or rename the chat title for a specific 
-        chat session.
-
-        Payload:
-        {
-        # The unique identifier for the user.
-          "user_id": int,
-           # The unique identifier for the chat session.  
-          "chat_session_id": int,
-          # The new chat title to be set for the chat session. 
-          "chat_title": str          
-        }
-
-        Returns:
-        - dict: A dictionary indicating the success or error
-          message.
-          Example:
-          {"success": "Chat title updated successfully!"}
-
-        Raises:
-        - NotFound: If the specified chat session does not exist.
-        - ValueError: If the chat title is empty, contains 
-        whitespace, or exceeds the maximum length.
-        - Exception: If an unexpected error occurs.
-        """
-            try:
-                # get the data from incoming request
-                data = request.get_json()
-                user_id = data.get("user_id")
-                chat_session_id = data.get("chat_session_id")
-                chat_title = data.get("chat_title")
-                
-                # validate if chat title does't exist against the given parameters
-                if not self.db_handler.does_chat_title_exist(user_id, chat_session_id, chat_title):
-                    raise NotFound("Chat session does not exist!")
-                
-                max_chat_title_len = 50
-                # validate if the chat_title is empty or contain whitspace and check length
-                if not chat_title.strip():
-                    raise ValueError("Chat title cannot be empty or whitespace.")
-                # validate the length of chat_title in characters
-                elif len(chat_title) > max_chat_title_len:
-                    raise ValueError(f"Chat title length should not exceed {max_chat_title_len} characters.")
-            
-                # call the method to rename chat title
-                self.db_handler.rename_chat_title(user_id, chat_session_id, chat_title)
-                return {'success': 'Chat title updated successfully!'}
-            
-            # catch exception if the chat_title  does not exist
-            except NotFound as nfe:
-                # log the error
-                logging.error(f"ValueError:{str(nfe)}")
-                return {'error':str(nfe)}, 404 
-            
-            # Catch exception if the chat title is empty or contain whitespace 
-            except ValueError as ve:
-                # Log the error
-                logging.error(f"ValueError: {str(ve)}")
-                return {'error': str(ve)}, 400
-
-            # Catch exception if any unexpected error occured 
-            except Exception as e:
-                # Log the error 
-                logging.error(f"An unexpected error occured :{str(e)}")
-                return {'error':'An unexpected error occured.'}, 500
-    
-
-# define class to delete the chat session
-class DeleteChatSessionResource(Resource):
-    """
-    Resource for deleting a specific chat session.
-
-    Methods:
-    - delete(user_id: int, chat_session_id: int) -> dict:
-        Delete a specific chat session.
-
-    - check_data_existence(user_id: int, chat_session_id: int) -> bool:
-        Check if the specified chat session exists in the database.
-
-    - delete_chat_session(user_id: int, chat_session_id: int) -> None:
-        Delete the specified chat session from the database.
-
-    """
-    def __init__(self):
-        self.db_handler = db_handler
-    
-    # Apply rate limiting for certin request per minute and request per day
-    # @limiter.limit("10 per minute; 100 per day")
-
-    def delete(self, user_id, chat_session_id):
-        """
-        HTTP DELETE method to delete a specific chat session.
-
-        Args:
-        - user_id (int): The ID of the user associated with 
-        the chat session.
-        - chat_session_id (int): The ID of the chat session
-          to be deleted.
-
-        Returns:
-        - dict: A dictionary indicating the status of the 
-        deletion operation.
-
-        Description:
-        This method is called when an HTTP DELETE request is
-          made to the
-          '/v1/chatbot/delete_chat_session/<user_id>/
-          <chat_session_id>' endpoint.
-        It checks if the specified chat session exists in the
-          database and deletes it if found.
-
-        Example Usage:
-        ```
-        response = resource.delete(user_id=1, chat_session_id=123)
-        ```
-
-        """
         try:
-            # Checkif the data exists in the database
-            if not self.db_handler.check_session_existence(user_id, chat_session_id):
-                raise NotFound("Chat does not exist!")
+            chatbot_response = chatbot.answer_question(
+                request_data.user_id,
+                chat_session_id,
+                request_data.question,
+            )
 
-            # Your existing logic to delete the chat session
-            self.db_handler.delete_chat_session(user_id, chat_session_id)
+            generated_chat_title = db_handler.generate_chat_title(
+                request_data.user_id,
+                chat_session_id,
+            )
+            db_handler.save_chat_title(
+                request_data.user_id,
+                chat_session_id,
+                generated_chat_title,
+            )
 
-            # return the status message 
-            return {'message': 'Deleted successfully'}
-        
-        # catch the NotFound exception
-        except NotFound as nfe:
-            # Log the error
-            logging.error(f"NotFound: {str(nfe)}")
-            return {'error':str(nfe)},404 
-    
+            if isinstance(chatbot_response, dict):
+                answer = chatbot_response.get("answer", "")
+                sources = chatbot_response.get("sources", [])
+            else:
+                answer = chatbot_response
+                sources = []
 
-# define class to delete the data
-class DeleteAllChatsResource(Resource):
-    """
-    Resource for deleting all chat sessions for a 
-    specific user.
+            yield encode({"type": "sources", "sources": sources})
+            yield encode({"type": "status", "message": "Generating answer"})
 
-    Methods:
-    - delete(user_id: int) -> dict:
-        Delete all chat sessions for a specific user.
+            words = answer.split(" ")
+            for index in range(0, len(words), 4):
+                chunk = " ".join(words[index:index + 4])
+                if index + 4 < len(words):
+                    chunk += " "
+                yield encode({"type": "chunk", "text": chunk})
+                await asyncio.sleep(0.015)
 
-    - check_data_existence(user_id: int) -> bool:
-        Check if any chat sessions exist for the 
-        specified user.
+            yield encode({
+                "type": "done",
+                "answer": answer,
+                "chat_session_id": chat_session_id,
+                "sources": sources,
+            })
+        except Exception as exc:
+            logging.error(
+                "Streaming chat completion failed (%s on %s): %s",
+                exc.__class__.__name__,
+                Config.LLM_NAME,
+                str(exc),
+                exc_info=True,
+            )
+            yield encode({
+                "type": "error",
+                "error": {
+                    "code": "stream_error",
+                    "message": str(exc) or "An error occurred while processing your request.",
+                    "service": "api",
+                },
+            })
 
-    - delete_all_chats(user_id: int) -> None:
-        Delete all chat sessions for the specified 
-        user from the database.
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
-    """
-    def __init__(self):
-        self.db_handler = db_handler
 
-    # Apply rate limiting for certin request per minute and request per day
-    # @limiter.limit("20 per minute; 100 per day")
+@router.get("/history/{user_id}/{chat_session_id}")
+def get_chat_history(
+    user_id: int,
+    chat_session_id: int,
+    db_handler: DatabaseHandler = Depends(get_database_handler),
+):
+    try:
+        return db_handler.get_chat_history(user_id, chat_session_id)
+    except Exception as exc:
+        logging.error("Chat history not found: %s", str(exc))
+        raise HTTPException(status_code=404, detail="Chat history not found!.")
 
-    #define the delete method to delete the all chats
-    def delete(self, user_id):
-        """
-        HTTP DELETE method to delete all chat sessions
-          for a specific user.
 
-        Args:
-        - user_id (int): The ID of the user whose chat
-          sessions will be deleted.
+@router.get("/chat_list/{user_id}")
+def get_chat_list(
+    user_id: int,
+    db_handler: DatabaseHandler = Depends(get_database_handler),
+):
+    try:
+        chat_sessions = db_handler.get_chat_sessions(user_id)
+        chat_sessions_with_titles = []
 
-        Returns:
-        - dict: A dictionary indicating the status of
-          the deletion operation.
+        for chat_session_id in chat_sessions:
+            chat_title = db_handler.get_chat_title(user_id, chat_session_id)
+            chat_sessions_with_titles.append(
+                {"chat_session_id": chat_session_id, "chat_title": chat_title}
+            )
 
-        Description:
-        This method is called when an HTTP DELETE 
-        request is made to the 
-        '/v1/chatbot/delete_all_chats/<user_id>' 
-        endpoint.
-        It checks if any chat sessions exist for the
-          specified user and deletes
-          them if found.
+        if not chat_sessions_with_titles:
+            raise HTTPException(status_code=404, detail="Chat list not found!!.")
 
-        Example Usage:
-        ```
-        response = resource.delete(user_id=1)
-        ```
+        return {"chat_sessions": chat_sessions_with_titles}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.error("Chat list not found!: %s", str(exc))
+        raise HTTPException(status_code=404, detail="Chat list not found!!.")
 
-        """
-        try:
-            if user_id is None:
-                return {'message':'user id cannot be None'}, 404
-            if not self.db_handler.check_user_existence(user_id):
-                return {'message':'Data does not exist'}, 404
-            
-            self.db_handler.delete_all_chats(user_id)
-            return {'message':'Deleted successfully!'}
-        
-        except Exception as e:
-            logging.error(f"An error occured while processing your request :{str(e)}")
-            return {'message':'An error occured while processing your request'}
-   
-   
+
+@router.put("/rename_chat_title")
+def rename_chat_title(
+    request_data: RenameChatTitleRequest,
+    db_handler: DatabaseHandler = Depends(get_database_handler),
+):
+    try:
+        if not db_handler.does_chat_title_exist(
+            request_data.user_id,
+            request_data.chat_session_id,
+            request_data.chat_title,
+        ):
+            raise HTTPException(status_code=404, detail="Chat session does not exist!")
+
+        db_handler.rename_chat_title(
+            request_data.user_id,
+            request_data.chat_session_id,
+            request_data.chat_title,
+        )
+        return {"success": "Chat title updated successfully!"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.error("An unexpected error occured: %s", str(exc))
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occured.",
+        )
+
+
+@router.delete("/delete_chat_session/{user_id}/{chat_session_id}")
+def delete_chat_session(
+    user_id: int,
+    chat_session_id: int,
+    db_handler: DatabaseHandler = Depends(get_database_handler),
+):
+    try:
+        if not db_handler.check_session_existence(user_id, chat_session_id):
+            raise HTTPException(status_code=404, detail="Chat does not exist!")
+
+        db_handler.delete_chat_session(user_id, chat_session_id)
+        return {"message": "Deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.error("An unexpected error occured: %s", str(exc))
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occured.",
+        )
+
+
+@router.delete("/delete_all_chats/{user_id}")
+def delete_all_chats(
+    user_id: int,
+    db_handler: DatabaseHandler = Depends(get_database_handler),
+):
+    try:
+        if not db_handler.check_user_existence(user_id):
+            raise HTTPException(status_code=404, detail="Data does not exist")
+
+        db_handler.delete_all_chats(user_id)
+        return {"message": "Deleted successfully!"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.error("An error occured while processing your request :%s", str(exc))
+        return {"message": "An error occured while processing your request"}
