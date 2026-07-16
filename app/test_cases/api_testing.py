@@ -1,5 +1,6 @@
 import app.app as app_module
 import pytest
+from app.config.config import Config
 from fastapi.testclient import TestClient
 
 from app import app_bckp
@@ -80,8 +81,7 @@ def test_app():
 
 
 def test_health_request(test_app, monkeypatch):
-    monkeypatch.setattr(app_module, "check_openai_health", lambda: (True, {"service": "openai", "status": "up", "model": "gpt-4o-mini", "message": None}))
-    monkeypatch.setattr(app_module, "check_ollama_health", lambda: (True, {"service": "ollama", "status": "up", "endpoint": "http://localhost:11434/api/tags"}))
+    monkeypatch.setattr(app_module, "check_openai_health", lambda: (True, {"service": "openai", "status": "up", "model": Config.LLM_NAME, "message": None}))
     response = test_app.get('/health')
     assert response.status_code == 200
     data = response.json()

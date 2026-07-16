@@ -1,7 +1,9 @@
+from app.config.config import Config
 import tiktoken
 
 # define the function to count the token of user questions
-def num_tokens_from_messages(messages, model="gpt-3.5-turbo-0613"):
+def num_tokens_from_messages(messages, model=None):
+    model = model or Config.LLM_NAME
     """
     Calculate the total number of tokens used by a list of messages.
 

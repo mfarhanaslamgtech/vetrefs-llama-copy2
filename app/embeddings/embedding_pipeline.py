@@ -1,9 +1,10 @@
+from app.config.config import Config
 import os
 import json
 import logging
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings
 from tqdm import tqdm
 from colorama import Fore, Style, init
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -133,13 +134,13 @@ def process_pdfs_in_batches(pdf_files_to_process, batch_size, embedding, index_n
 def main():
     # root_directory = "/home/abusufyan/development/private_llm/app/embeddings/data"
     root_directory=r"E:\Mohsin HP\G\VetLexicon"
-    index_name = 'vetrefs-llama'
-    namespace = 'vetrefs'
+    index_name = Config.PINECONE_INDEX_NAME
+    namespace = Config.PINECONE_NAMESPACE
     batch_size = 10
     progress_file=r"D:\private_llm\app\embeddings\progress.json"
 
     # Initialize embedding
-    embedding = OllamaEmbeddings(model="nomic-embed-text", show_progress=True)
+    embedding = OpenAIEmbeddings(model=Config.OPENAI_EMBEDDING_MODEL, api_key=Config.OPENAI_API_KEY)
 
     # Get PDF file paths
     pdf_files_to_process = get_pdf_file_paths(root_directory)
