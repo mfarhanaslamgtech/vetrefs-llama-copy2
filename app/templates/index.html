@@ -235,8 +235,14 @@
   .btn:active{transform:translateY(0);}
   .btn-primary{color:#EFF6EC;background:var(--sage-deep);}
   .btn-primary:hover{background:var(--sage);}
-  .send-btn{position:relative;overflow:hidden;min-width:112px;color:#EFF6EC;background:var(--sage-deep);box-shadow:0 5px 16px rgba(44,71,50,.18);}
+  .send-btn{position:relative;overflow:hidden;min-width:112px;color:#EFF6EC;background:var(--sage-deep);box-shadow:0 5px 16px rgba(44,71,50,.18);animation:send-breathe 2.8s ease-in-out infinite;}
   .send-btn:hover{background:var(--sage);}
+  .send-btn::before{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 30%,rgba(228,235,222,.32) 50%,transparent 70%);transform:translateX(-125%);animation:send-sweep 3.6s ease-in-out infinite;}
+  .send-btn .send-icon,.send-btn > span:last-child{position:relative;z-index:1;}
+  .send-btn:active .send-icon{transform:translateX(7px) rotate(-8deg);}
+  .send-btn[disabled]{animation:none;}
+  @keyframes send-breathe{0%,100%{box-shadow:0 5px 16px rgba(44,71,50,.18);}50%{box-shadow:0 7px 24px rgba(63,97,72,.38);}}
+  @keyframes send-sweep{0%,35%{transform:translateX(-125%);}65%,100%{transform:translateX(125%);}}
   .send-icon{display:inline-block;margin-right:7px;transition:transform 180ms ease;}
   .send-btn:hover .send-icon{transform:translateX(3px);}
   .btn-secondary{color:var(--ink-soft);background:transparent;border:1px solid var(--rule-strong);}
